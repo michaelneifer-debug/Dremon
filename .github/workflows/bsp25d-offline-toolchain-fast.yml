@@ -42,16 +42,15 @@ jobs:
           tar -xJf dl/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz -C stage/mingw --strip-components=1
           tar -xJf dl/wine-11.15-staging-amd64-wow64.tar.xz -C stage/wine --strip-components=1
           tar --zstd -xf dl/vkd3d-proton-3.0.1.tar.zst -C stage/vkd3d --strip-components=1
-          unzip -q dl/dxc_2026_07_29.zip -d stage/dxc-win
+          unzip -q dl/dxc_2026_07_29.zip -d stage/dxc-win || true
           DXC_EXE=$(find stage/dxc-win -type f -iname dxc.exe | grep -Ei 'x64|amd64' | head -1 || true)
           test -n "$DXC_EXE"
-          printf '%s\n' "$DXC_EXE" > stage/dxc/DXC_EXE.relative
+          printf '%s\n' "${DXC_EXE#stage/}" > stage/dxc/DXC_EXE.relative
           cat > stage/dxc/bin/dxc <<'SH'
           #!/usr/bin/env bash
-          D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-          R="$(cd "$D/../.." && pwd)"
+          D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; R="$(cd "$D/../.." && pwd)"
           X="$(cat "$R/dxc/DXC_EXE.relative")"
-          exec env WINEDEBUG=-all "$R/wine/bin/wine" "$R/${X#stage/}" "$@"
+          exec env WINEDEBUG=-all "$R/wine/bin/wine" "$R/$X" "$@"
           SH
           chmod +x stage/dxc/bin/dxc
 
@@ -60,7 +59,7 @@ jobs:
           set -euxo pipefail
           HR="$PWD/stage/host-runtime"; WD="$PWD/stage/wine-deps"
           mkdir -p "$HR/bin" "$HR/lib" "$HR/icd" "$HR/layers" "$WD/lib"
-          copydeps(){ f="$1"; lddtree -l "$f" 2>/dev/null | while read -r d; do test -f "$d" && cp -L -n "$d" "$2/" || true; done; }
+          copydeps(){ f="$1"; out="$2"; lddtree -l "$f" 2>/dev/null | while read -r d; do test -f "$d" && cp -L -n "$d" "$out/" || true; done; }
           LVP=$(find /usr/lib -type f -name libvulkan_lvp.so -print -quit); test -n "$LVP"
           cp -L "$LVP" "$HR/lib/libvulkan_lvp.so"; copydeps "$LVP" "$HR/lib"
           for b in /usr/bin/vulkaninfo /usr/bin/glslangValidator /usr/bin/spirv-val; do cp -L "$b" "$HR/bin/"; copydeps "$b" "$HR/lib"; done
@@ -69,12 +68,11 @@ jobs:
           {"file_format_version":"1.0.0","ICD":{"library_path":"libvulkan_lvp.so","api_version":"1.4.0"}}
           JSON
           VJSON=$(find /usr/share/vulkan/explicit_layer.d -type f -iname '*validation*.json' -print -quit || true)
-          if [ -n "$VJSON" ]; then cp "$VJSON" "$HR/layers/"; fi
+          test -z "$VJSON" || cp "$VJSON" "$HR/layers/"
           find stage/wine -type f -print0 | while IFS= read -r -d '' f; do if file "$f" | grep -q 'ELF '; then copydeps "$f" "$WD/lib"; fi; done
 
       - name: Create relocatable environment
         run: |
-          set -euxo pipefail
           cat > stage/env.sh <<'SH'
           #!/usr/bin/env bash
           BSP25D_TOOLCHAIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; export BSP25D_TOOLCHAIN_ROOT
@@ -140,11 +138,10 @@ jobs:
         if: always()
         run: |
           set -euxo pipefail
-          rm -rf stage/*-prefix stage/dxc-prefix stage/hello-prefix stage/d3d12-prefix
-          CORE=$(cat stage/logs/core_result.txt 2>/dev/null || echo NOT_RUN)
-          D3D=$(cat stage/logs/d3d12_result.txt 2>/dev/null || echo NOT_RUN)
+          rm -rf stage/dxc-prefix stage/hello-prefix stage/d3d12-prefix
+          CORE=$(cat stage/logs/core_result.txt 2>/dev/null || echo NOT_RUN); D3D=$(cat stage/logs/d3d12_result.txt 2>/dev/null || echo NOT_RUN)
           cat >stage/manifest.json <<EOF
-          {"schema":"bsp25d.offline_toolchain.v3","llvm_mingw":"20260616-ucrt","wine":"11.15-staging-wow64","vkd3d_proton":"3.0.1","dxc":"1.9.2607-windows-via-wine","mesa":"25.2.8-lavapipe","core_validation":"$CORE","d3d12_vkd3d_lavapipe":"$D3D"}
+          {"schema":"bsp25d.offline_toolchain.v4","llvm_mingw":"20260616-ucrt","wine":"11.15-staging-wow64","vkd3d_proton":"3.0.1","dxc":"1.9.2607-windows-via-wine","mesa":"25.2.8-lavapipe","core_validation":"$CORE","d3d12_vkd3d_lavapipe":"$D3D"}
           EOF
           (cd stage && find . -type f ! -name MANIFEST_SHA256.txt -print0 | sort -z | xargs -0 sha256sum >MANIFEST_SHA256.txt)
           tar --zstd -cf bsp25d-offline-toolchain.tar.zst -C stage .
