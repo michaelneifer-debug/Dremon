@@ -19,7 +19,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers \
-            glslang-tools spirv-tools pax-utils zstd xz-utils jq cmake ninja-build xvfb
+            glslang-tools spirv-tools pax-utils zstd xz-utils jq cmake ninja-build
 
       - name: Download pinned portable toolchains
         env:
@@ -75,10 +75,7 @@ jobs:
           cat > "$ROOT/icd/lvp_icd.json" <<'JSON'
           {
             "file_format_version": "1.0.0",
-            "ICD": {
-              "library_path": "libvulkan_lvp.so",
-              "api_version": "1.4.0"
-            }
+            "ICD": { "library_path": "libvulkan_lvp.so", "api_version": "1.4.0" }
           }
           JSON
           VJSON=$(find /usr/share/vulkan/explicit_layer.d -type f -iname '*validation*.json' -print -quit || true)
@@ -123,9 +120,7 @@ jobs:
           export LD_LIBRARY_PATH="$BSP25D_TOOLCHAIN_ROOT/wine-deps/lib:$HOST_RUNTIME_ROOT/lib:$DXC_ROOT/lib:${LD_LIBRARY_PATH:-}"
           export VK_ICD_FILENAMES="$HOST_RUNTIME_ROOT/icd/lvp_icd.json"
           export VK_DRIVER_FILES="$VK_ICD_FILENAMES"
-          if compgen -G "$HOST_RUNTIME_ROOT/layers/*.json" >/dev/null; then
-            export VK_LAYER_PATH="$HOST_RUNTIME_ROOT/layers"
-          fi
+          if compgen -G "$HOST_RUNTIME_ROOT/layers/*.json" >/dev/null; then export VK_LAYER_PATH="$HOST_RUNTIME_ROOT/layers"; fi
           SH
           chmod +x stage/env.sh
 
@@ -145,7 +140,7 @@ jobs:
           int main(){ std::puts("BSP25D_MINGW_WINE_PASS"); return 0; }
           CPP
           x86_64-w64-mingw32-clang++ -O2 -static -static-libgcc -static-libstdc++ /tmp/hello.cpp -o stage/hello.exe
-          WINEDEBUG=-all xvfb-run -a wine stage/hello.exe | tee stage/wine_hello.txt
+          timeout 90s env WINEDEBUG=-all wine stage/hello.exe | tee stage/wine_hello.txt
           grep BSP25D_MINGW_WINE_PASS stage/wine_hello.txt
 
       - name: Verify D3D12 through Wine vkd3d on Lavapipe
@@ -154,13 +149,7 @@ jobs:
           source stage/env.sh
           export WINEPREFIX="$PWD/stage/wineprefix"
           rm -rf "$WINEPREFIX"
-          WINEDEBUG=-all xvfb-run -a wineboot -u
-
-          # vkd3d-proton's generic setup helper asks Wine to discover system32 via
-          # winepath/registry. Portable WoW64 Wine prefixes on headless CI do not
-          # always expose that registry value even though drive_c/windows exists.
-          # Our test is 64-bit only, so install exactly the same two native DLLs
-          # directly and force Wine to load them.
+          timeout 90s env WINEDEBUG=-all wineboot -u
           SYS64="$WINEPREFIX/drive_c/windows/system32"
           mkdir -p "$SYS64"
           test -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll"
@@ -168,7 +157,6 @@ jobs:
           cp -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll" "$SYS64/d3d12.dll"
           cp -f "$VKD3D_PROTON_ROOT/x64/d3d12core.dll" "$SYS64/d3d12core.dll"
           export WINEDLLOVERRIDES="d3d12,d3d12core=n,b;mscoree,mshtml="
-
           cat > /tmp/d3d12_probe.cpp <<'CPP'
           #define WIN32_LEAN_AND_MEAN
           #include <windows.h>
@@ -180,13 +168,12 @@ jobs:
             if(FAILED(hr)||!dev){ std::printf("D3D12_FAIL hr=0x%08lx\n",(unsigned long)hr); return 3; }
             D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
             HRESULT ohr=dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS,&opts,sizeof(opts));
-            std::printf("BSP25D_D3D12_WINE_LAVAPIPE_PASS nodes=%u opts_hr=0x%08lx\n",
-              (unsigned)dev->GetNodeCount(),(unsigned long)ohr);
+            std::printf("BSP25D_D3D12_WINE_LAVAPIPE_PASS nodes=%u opts_hr=0x%08lx\n",(unsigned)dev->GetNodeCount(),(unsigned long)ohr);
             dev->Release(); return 0;
           }
           CPP
           x86_64-w64-mingw32-clang++ -std=c++20 -O2 /tmp/d3d12_probe.cpp -o stage/d3d12_probe.exe -ld3d12 -ldxgi -lole32 -luuid
-          WINEDEBUG=-all xvfb-run -a wine stage/d3d12_probe.exe | tee stage/d3d12_probe.txt
+          timeout 120s env WINEDEBUG=-all wine stage/d3d12_probe.exe | tee stage/d3d12_probe.txt
           grep BSP25D_D3D12_WINE_LAVAPIPE_PASS stage/d3d12_probe.txt
 
       - name: Pack offline cache
@@ -194,16 +181,7 @@ jobs:
           set -euxo pipefail
           rm -rf stage/wineprefix
           cat > stage/manifest.json <<EOF
-          {
-            "schema":"bsp25d.offline_toolchain.v1",
-            "runner":"ubuntu-24.04",
-            "llvm_mingw":"20260616-ucrt",
-            "wine":"11.13-staging-amd64-wow64",
-            "vkd3d_proton":"3.0.1",
-            "dxc":"v1.9.2602.24",
-            "lavapipe":"ubuntu-24.04 mesa-vulkan-drivers",
-            "validated":{"mingw":true,"wine":true,"lavapipe":true,"d3d12_vkd3d":true}
-          }
+          {"schema":"bsp25d.offline_toolchain.v1","runner":"ubuntu-24.04","llvm_mingw":"20260616-ucrt","wine":"11.13-staging-amd64-wow64","vkd3d_proton":"3.0.1","dxc":"v1.9.2602.24","lavapipe":"ubuntu-24.04 mesa-vulkan-drivers","validated":{"mingw":true,"wine":true,"lavapipe":true,"d3d12_vkd3d":true}}
           EOF
           (cd stage && sha256sum hello.exe d3d12_probe.exe > TOOLCHAIN_PROOFS.sha256)
           tar -cJf bsp25d-offline-toolchain.tar.xz -C stage .
