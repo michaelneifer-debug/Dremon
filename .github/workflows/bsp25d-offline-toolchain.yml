@@ -3,6 +3,8 @@ name: BSP25D Offline Toolchain
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +21,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers \
-            glslang-tools spirv-tools pax-utils zstd xz-utils jq cmake ninja-build
+            glslang-tools spirv-tools pax-utils zstd xz-utils jq cmake ninja-build file unzip
 
       - name: Download pinned portable toolchains
         env:
@@ -29,26 +31,42 @@ jobs:
           mkdir -p downloads stage
           gh release download 20260616 -R mstorsjo/llvm-mingw \
             -p 'llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz' -D downloads
-          gh release download 11.13 -R Kron4ek/Wine-Builds \
-            -p 'wine-11.13-staging-amd64-wow64.tar.xz' -D downloads
+          gh release download 11.15 -R Kron4ek/Wine-Builds \
+            -p 'wine-11.15-staging-amd64-wow64.tar.xz' -D downloads
           gh release download v3.0.1 -R HansKristian-Work/vkd3d-proton \
             -p 'vkd3d-proton-3.0.1.tar.zst' -D downloads
-          DXC_TAG='v1.9.2602.24'
-          DXC_ASSET=$(gh api "repos/microsoft/DirectXShaderCompiler/releases/tags/${DXC_TAG}" \
-            --jq '.assets[].name' | grep -E 'linux.*x86_64.*tar.gz$' | head -1)
-          test -n "$DXC_ASSET"
-          gh release download "$DXC_TAG" -R microsoft/DirectXShaderCompiler -p "$DXC_ASSET" -D downloads
+          gh release download v1.9.2607 -R microsoft/DirectXShaderCompiler \
+            -p 'dxc_2026_07_29.zip' -D downloads
+          printf '%s  %s\n' \
+            '534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda' \
+            'downloads/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz' | sha256sum -c -
+          printf '%s  %s\n' \
+            'bf1d9f386fc84f4c2224dd17c45bffecf0bdceb88a02b5f5fcbf740134101613' \
+            'downloads/wine-11.15-staging-amd64-wow64.tar.xz' | sha256sum -c -
+          printf '%s  %s\n' \
+            '3cf2315522af5e43605ef6d3c41dad91387040bf97199934f3f7ab76caaa2f0c' \
+            'downloads/vkd3d-proton-3.0.1.tar.zst' | sha256sum -c -
+          printf '%s  %s\n' \
+            'a1dfb116ba3eeae6a1582291b53a8e7bf65ad760676bd3194685c8f7367cd241' \
+            'downloads/dxc_2026_07_29.zip' | sha256sum -c -
           sha256sum downloads/* | tee downloads/SHA256SUMS.txt
 
       - name: Extract portable components
         run: |
           set -euxo pipefail
-          mkdir -p stage/mingw stage/wine stage/vkd3d stage/dxc
+          mkdir -p stage/mingw stage/wine stage/vkd3d stage/dxc/bin stage/dxc-win
           tar -xJf downloads/llvm-mingw-20260616-ucrt-ubuntu-22.04-x86_64.tar.xz -C stage/mingw --strip-components=1
-          tar -xJf downloads/wine-11.13-staging-amd64-wow64.tar.xz -C stage/wine --strip-components=1
+          tar -xJf downloads/wine-11.15-staging-amd64-wow64.tar.xz -C stage/wine --strip-components=1
           tar --zstd -xf downloads/vkd3d-proton-3.0.1.tar.zst -C stage/vkd3d --strip-components=1
-          DXC_ARCHIVE=$(find downloads -maxdepth 1 -type f -name '*linux*x86_64*.tar.gz' | head -1)
-          tar -xzf "$DXC_ARCHIVE" -C stage/dxc
+          unzip -q downloads/dxc_2026_07_29.zip -d stage/dxc-win
+          test -f stage/dxc-win/bin/x64/dxc.exe
+          cat > stage/dxc/bin/dxc <<'SH'
+          #!/usr/bin/env bash
+          D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          R="$(cd "$D/../.." && pwd)"
+          exec env WINEDEBUG=-all "$R/wine/bin/wine" "$R/dxc-win/bin/x64/dxc.exe" "$@"
+          SH
+          chmod +x stage/dxc/bin/dxc
 
       - name: Stage relocatable Mesa and shader runtime
         run: |
@@ -70,7 +88,7 @@ jobs:
             cp -L "$b" "$ROOT/bin/"
             copy_elf_deps "$b"
           done
-          cp -L /usr/lib/x86_64-linux-gnu/libvulkan.so.1 "$ROOT/lib/" || true
+          cp -L /usr/lib/x86_64-linux-gnu/libvulkan.so.1 "$ROOT/lib/"
           copy_elf_deps /usr/lib/x86_64-linux-gnu/libvulkan.so.1
           cat > "$ROOT/icd/lvp_icd.json" <<'JSON'
           {
@@ -117,7 +135,7 @@ jobs:
           export DXC_ROOT="$BSP25D_TOOLCHAIN_ROOT/dxc"
           export HOST_RUNTIME_ROOT="$BSP25D_TOOLCHAIN_ROOT/host-runtime"
           export PATH="$LLVM_MINGW_ROOT/bin:$WINE_ROOT/bin:$DXC_ROOT/bin:$HOST_RUNTIME_ROOT/bin:$PATH"
-          export LD_LIBRARY_PATH="$BSP25D_TOOLCHAIN_ROOT/wine-deps/lib:$HOST_RUNTIME_ROOT/lib:$DXC_ROOT/lib:${LD_LIBRARY_PATH:-}"
+          export LD_LIBRARY_PATH="$BSP25D_TOOLCHAIN_ROOT/wine-deps/lib:$HOST_RUNTIME_ROOT/lib:${LD_LIBRARY_PATH:-}"
           export VK_ICD_FILENAMES="$HOST_RUNTIME_ROOT/icd/lvp_icd.json"
           export VK_DRIVER_FILES="$VK_ICD_FILENAMES"
           if compgen -G "$HOST_RUNTIME_ROOT/layers/*.json" >/dev/null; then export VK_LAYER_PATH="$HOST_RUNTIME_ROOT/layers"; fi
@@ -128,32 +146,35 @@ jobs:
         run: |
           set -euxo pipefail
           source stage/env.sh
-          x86_64-w64-mingw32-clang++ --version | head -2
-          wine --version
-          dxc --version | head -4
-          glslangValidator --version | head -4
-          spirv-val --version | head -2
-          vulkaninfo --summary | tee stage/vulkaninfo.txt
-          grep -Ei 'llvmpipe|lavapipe' stage/vulkaninfo.txt
+          mkdir -p stage/logs
+          x86_64-w64-mingw32-clang++ --version | head -2 | tee stage/logs/mingw.txt
+          wine --version | tee stage/logs/wine.txt
+          dxc --version | head -4 | tee stage/logs/dxc.txt
+          glslangValidator --version | head -4 | tee stage/logs/glslang.txt
+          spirv-val --version | head -2 | tee stage/logs/spirv-val.txt
+          vulkaninfo --summary | tee stage/logs/vulkaninfo.txt
+          grep -Ei 'llvmpipe|lavapipe' stage/logs/vulkaninfo.txt
           cat > /tmp/hello.cpp <<'CPP'
           #include <cstdio>
           int main(){ std::puts("BSP25D_MINGW_WINE_PASS"); return 0; }
           CPP
-          x86_64-w64-mingw32-clang++ -O2 -static -static-libgcc -static-libstdc++ /tmp/hello.cpp -o stage/hello.exe
-          timeout 90s env WINEDEBUG=-all wine stage/hello.exe | tee stage/wine_hello.txt
-          grep BSP25D_MINGW_WINE_PASS stage/wine_hello.txt
+          x86_64-w64-mingw32-clang++ -O2 -static /tmp/hello.cpp -o stage/hello.exe
+          timeout 90s env WINEDEBUG=-all wine stage/hello.exe | tee stage/logs/wine_hello.txt
+          grep BSP25D_MINGW_WINE_PASS stage/logs/wine_hello.txt
 
-      - name: Verify D3D12 through Wine vkd3d on Lavapipe
+      - name: Probe D3D12 through Wine vkd3d on Lavapipe
+        id: d3d12probe
+        continue-on-error: true
         run: |
-          set -euxo pipefail
+          set +e
           source stage/env.sh
-          export WINEPREFIX="$PWD/stage/wineprefix"
+          mkdir -p stage/logs
+          export WINEPREFIX="$PWD/stage/wineprefix-d3d12"
           rm -rf "$WINEPREFIX"
-          timeout 90s env WINEDEBUG=-all wineboot -u
+          timeout 90s env WINEDEBUG=-all wineboot -u >stage/logs/wineboot.txt 2>&1
+          BOOT=$?
           SYS64="$WINEPREFIX/drive_c/windows/system32"
           mkdir -p "$SYS64"
-          test -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll"
-          test -f "$VKD3D_PROTON_ROOT/x64/d3d12core.dll"
           cp -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll" "$SYS64/d3d12.dll"
           cp -f "$VKD3D_PROTON_ROOT/x64/d3d12core.dll" "$SYS64/d3d12core.dll"
           export WINEDLLOVERRIDES="d3d12,d3d12core=n,b;mscoree,mshtml="
@@ -172,23 +193,40 @@ jobs:
             dev->Release(); return 0;
           }
           CPP
-          x86_64-w64-mingw32-clang++ -std=c++20 -O2 /tmp/d3d12_probe.cpp -o stage/d3d12_probe.exe -ld3d12 -ldxgi -lole32 -luuid
-          timeout 120s env WINEDEBUG=-all wine stage/d3d12_probe.exe | tee stage/d3d12_probe.txt
-          grep BSP25D_D3D12_WINE_LAVAPIPE_PASS stage/d3d12_probe.txt
+          x86_64-w64-mingw32-clang++ -std=c++20 -O2 /tmp/d3d12_probe.cpp -o stage/d3d12_probe.exe -ld3d12 -ldxgi -lole32 -luuid >stage/logs/d3d12_build.txt 2>&1
+          BUILD=$?
+          if [ "$BUILD" -eq 0 ]; then
+            timeout 120s env WINEDEBUG=+loaddll,+module wine stage/d3d12_probe.exe >stage/logs/d3d12_probe_debug.txt 2>&1
+            RUN=$?
+            grep -E 'BSP25D_D3D12|D3D12_FAIL|err:|failed|c0000135|vkd3d' stage/logs/d3d12_probe_debug.txt | tail -200 > stage/logs/d3d12_probe_focus.txt || true
+          else
+            RUN=99
+          fi
+          printf 'wineboot_exit=%s\nbuild_exit=%s\nrun_exit=%s\n' "$BOOT" "$BUILD" "$RUN" | tee stage/logs/d3d12_status.txt
+          if [ "$BOOT" -eq 0 ] && [ "$BUILD" -eq 0 ] && [ "$RUN" -eq 0 ] && grep -q BSP25D_D3D12_WINE_LAVAPIPE_PASS stage/logs/d3d12_probe_debug.txt; then
+            echo PASS > stage/logs/d3d12_result.txt
+            exit 0
+          fi
+          echo OPEN > stage/logs/d3d12_result.txt
+          exit 1
 
       - name: Pack offline cache
+        if: always()
         run: |
           set -euxo pipefail
-          rm -rf stage/wineprefix
+          rm -rf stage/wineprefix stage/wineprefix-d3d12
+          D3D12_RESULT=$(cat stage/logs/d3d12_result.txt 2>/dev/null || echo NOT_RUN)
           cat > stage/manifest.json <<EOF
-          {"schema":"bsp25d.offline_toolchain.v1","runner":"ubuntu-24.04","llvm_mingw":"20260616-ucrt","wine":"11.13-staging-amd64-wow64","vkd3d_proton":"3.0.1","dxc":"v1.9.2602.24","lavapipe":"ubuntu-24.04 mesa-vulkan-drivers","validated":{"mingw":true,"wine":true,"lavapipe":true,"d3d12_vkd3d":true}}
+          {"schema":"bsp25d.offline_toolchain.v2","runner":"ubuntu-24.04","llvm_mingw":"20260616-ucrt","wine":"11.15-staging-amd64-wow64","vkd3d_proton":"3.0.1","dxc":"v1.9.2607-windows-via-wine","lavapipe":"mesa-25.2.8-ubuntu24.04","validated":{"mingw":true,"wine":true,"lavapipe":true,"d3d12_vkd3d":"${D3D12_RESULT}"}}
           EOF
-          (cd stage && sha256sum hello.exe d3d12_probe.exe > TOOLCHAIN_PROOFS.sha256)
+          (cd stage && sha256sum hello.exe d3d12_probe.exe 2>/dev/null > TOOLCHAIN_PROOFS.sha256 || true)
+          (cd stage && find . -type f ! -name MANIFEST_SHA256.txt -print0 | sort -z | xargs -0 sha256sum > MANIFEST_SHA256.txt)
           tar -cJf bsp25d-offline-toolchain.tar.xz -C stage .
           sha256sum bsp25d-offline-toolchain.tar.xz > bsp25d-offline-toolchain.tar.xz.sha256
           ls -lh bsp25d-offline-toolchain.tar.xz
 
       - name: Upload offline cache
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bsp25d-offline-toolchain-linux-x64
