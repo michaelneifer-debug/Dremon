@@ -145,7 +145,7 @@ jobs:
           int main(){ std::puts("BSP25D_MINGW_WINE_PASS"); return 0; }
           CPP
           x86_64-w64-mingw32-clang++ -O2 -static -static-libgcc -static-libstdc++ /tmp/hello.cpp -o stage/hello.exe
-          WINEDEBUG=-all wine stage/hello.exe | tee stage/wine_hello.txt
+          WINEDEBUG=-all xvfb-run -a wine stage/hello.exe | tee stage/wine_hello.txt
           grep BSP25D_MINGW_WINE_PASS stage/wine_hello.txt
 
       - name: Verify D3D12 through Wine vkd3d on Lavapipe
@@ -154,8 +154,21 @@ jobs:
           source stage/env.sh
           export WINEPREFIX="$PWD/stage/wineprefix"
           rm -rf "$WINEPREFIX"
-          WINEDEBUG=-all wineboot -u
-          PATH="$WINE_ROOT/bin:$PATH" WINEPREFIX="$WINEPREFIX" "$VKD3D_PROTON_ROOT/setup_vkd3d_proton.sh" install
+          WINEDEBUG=-all xvfb-run -a wineboot -u
+
+          # vkd3d-proton's generic setup helper asks Wine to discover system32 via
+          # winepath/registry. Portable WoW64 Wine prefixes on headless CI do not
+          # always expose that registry value even though drive_c/windows exists.
+          # Our test is 64-bit only, so install exactly the same two native DLLs
+          # directly and force Wine to load them.
+          SYS64="$WINEPREFIX/drive_c/windows/system32"
+          mkdir -p "$SYS64"
+          test -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll"
+          test -f "$VKD3D_PROTON_ROOT/x64/d3d12core.dll"
+          cp -f "$VKD3D_PROTON_ROOT/x64/d3d12.dll" "$SYS64/d3d12.dll"
+          cp -f "$VKD3D_PROTON_ROOT/x64/d3d12core.dll" "$SYS64/d3d12core.dll"
+          export WINEDLLOVERRIDES="d3d12,d3d12core=n,b;mscoree,mshtml="
+
           cat > /tmp/d3d12_probe.cpp <<'CPP'
           #define WIN32_LEAN_AND_MEAN
           #include <windows.h>
@@ -165,12 +178,15 @@ jobs:
             ID3D12Device* dev=nullptr;
             HRESULT hr=D3D12CreateDevice(nullptr,D3D_FEATURE_LEVEL_11_0,__uuidof(ID3D12Device),(void**)&dev);
             if(FAILED(hr)||!dev){ std::printf("D3D12_FAIL hr=0x%08lx\n",(unsigned long)hr); return 3; }
-            std::printf("BSP25D_D3D12_WINE_LAVAPIPE_PASS feature=%u\n",(unsigned)dev->GetNodeCount());
+            D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
+            HRESULT ohr=dev->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS,&opts,sizeof(opts));
+            std::printf("BSP25D_D3D12_WINE_LAVAPIPE_PASS nodes=%u opts_hr=0x%08lx\n",
+              (unsigned)dev->GetNodeCount(),(unsigned long)ohr);
             dev->Release(); return 0;
           }
           CPP
           x86_64-w64-mingw32-clang++ -std=c++20 -O2 /tmp/d3d12_probe.cpp -o stage/d3d12_probe.exe -ld3d12 -ldxgi -lole32 -luuid
-          WINEDEBUG=-all wine stage/d3d12_probe.exe | tee stage/d3d12_probe.txt
+          WINEDEBUG=-all xvfb-run -a wine stage/d3d12_probe.exe | tee stage/d3d12_probe.txt
           grep BSP25D_D3D12_WINE_LAVAPIPE_PASS stage/d3d12_probe.txt
 
       - name: Pack offline cache
