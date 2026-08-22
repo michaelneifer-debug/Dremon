@@ -1,0 +1,3 @@
+Trigger PR-visible BSP25D offline toolchain relay.
+Retry after deterministic vkd3d system32 install fix.
+Retry headless bounded Wine/D3D12 lane.
