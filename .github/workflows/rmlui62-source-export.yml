@@ -1,0 +1,41 @@
+name: RmlUi 6.2 Source Export
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch pinned source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch 6.2 https://github.com/mikke89/RmlUi.git RmlUi
+          cd RmlUi
+          COMMIT=$(git rev-parse HEAD)
+          test -f Include/RmlUi/Core.h
+          test -f LICENSE.txt || test -f LICENSE
+          printf 'tag=6.2\ncommit=%s\nrepository=https://github.com/mikke89/RmlUi.git\nlicense=MIT\n' "$COMMIT" > ../RMLUI_6_2_PROVENANCE.txt
+          cd ..
+          rm -rf RmlUi/.git
+          tar -cJf RmlUi-6.2-source.tar.xz RmlUi RMLUI_6_2_PROVENANCE.txt
+          sha256sum RmlUi-6.2-source.tar.xz > RmlUi-6.2-source.tar.xz.sha256
+          cat RMLUI_6_2_PROVENANCE.txt
+          cat RmlUi-6.2-source.tar.xz.sha256
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmlui-6.2-source
+          path: |
+            RmlUi-6.2-source.tar.xz
+            RmlUi-6.2-source.tar.xz.sha256
+            RMLUI_6_2_PROVENANCE.txt
+          compression-level: 0
+          retention-days: 7
