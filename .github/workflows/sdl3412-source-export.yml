@@ -1,0 +1,42 @@
+name: SDL3 3.4.12 Source Export
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Fetch pinned source
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch release-3.4.12 https://github.com/libsdl-org/SDL.git SDL3
+          cd SDL3
+          COMMIT=$(git rev-parse HEAD)
+          test -f CMakeLists.txt
+          test -f LICENSE.txt
+          grep -q 'VERSION "3.4.12"' CMakeLists.txt
+          printf 'tag=release-3.4.12\nversion=3.4.12\ncommit=%s\nrepository=https://github.com/libsdl-org/SDL.git\nlicense=Zlib\n' "$COMMIT" > ../SDL3_3_4_12_PROVENANCE.txt
+          cd ..
+          rm -rf SDL3/.git
+          tar -cJf SDL3-3.4.12-source.tar.xz SDL3 SDL3_3_4_12_PROVENANCE.txt
+          sha256sum SDL3-3.4.12-source.tar.xz > SDL3-3.4.12-source.tar.xz.sha256
+          cat SDL3_3_4_12_PROVENANCE.txt
+          cat SDL3-3.4.12-source.tar.xz.sha256
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdl3-3.4.12-source
+          path: |
+            SDL3-3.4.12-source.tar.xz
+            SDL3-3.4.12-source.tar.xz.sha256
+            SDL3_3_4_12_PROVENANCE.txt
+          compression-level: 0
+          retention-days: 7
